@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"encoding/gob"
 	"fmt"
+	"math/rand"
+	"time"
 
 	"earthion/crypto"
 	"earthion/wallet"
@@ -36,8 +38,15 @@ func (tx *Transaction) Serialize() []byte {
 }
 
 // SetID generates a unique ID for the transaction
+// Uses timestamp + random nonce to ensure uniqueness
 func (tx *Transaction) SetID() {
-	tx.ID = crypto.DoubleHash(tx.Serialize())
+	rand.Seed(time.Now().UnixNano())
+	nonce := make([]byte, 8)
+	rand.Read(nonce)
+	
+	data := tx.Serialize()
+	data = append(data, nonce...)
+	tx.ID = crypto.DoubleHash(data)
 }
 
 // Sign signs the transaction data with the private key
@@ -90,29 +99,41 @@ func (tx *Transaction) IsCoinbase() bool {
 }
 
 // CoinbaseTx creates a reward transaction for mining
-func CoinbaseTx(pubKey []byte, amount int) *Transaction {
+// pubKey should be the 20-byte pubkey hash (not full public key)
+// blockIndex is used to create a unique TX ID
+func CoinbaseTx(pubKeyHash []byte, amount int, blockIndex int) *Transaction {
 	tx := &Transaction{
 		Inputs: []TXInput{
 			{
 				Txid: []byte{},
 				OutIndex: -1,
 				Signature: nil,
-				PubKey: pubKey,
+				PubKey: pubKeyHash, // Store pubkey hash
 			},
 		},
 		Outputs: []TXOutput{
 			{
 				Value: amount,
-				PubKey: pubKey,
+				PubKey: pubKeyHash, // Store pubkey hash (20 bytes)
 			},
 		},
 	}
 
-	tx.SetID()
+	// Include block index in serialization to ensure unique TX ID
+	tx.SetIDWithIndex(blockIndex)
 	return tx
 }
 
+// SetIDWithIndex generates a unique ID using block index
+func (tx *Transaction) SetIDWithIndex(blockIndex int) {
+	// Include block index to make TX ID unique
+	data := tx.Serialize()
+	data = append(data, IntToHex(int64(blockIndex))...)
+	tx.ID = crypto.DoubleHash(data)
+}
+
 // NewTransaction creates a new transaction that spends previous outputs
+// to should be 20-byte pubkey hash
 func NewTransaction(from *wallet.Wallet, to []byte, amount int, bc *Blockchain) (*Transaction, error) {
 	utxos := bc.UTXOIndex()
 	// Use raw address (20-byte pubkey hash) for balance lookup
@@ -138,9 +159,8 @@ func NewTransaction(from *wallet.Wallet, to []byte, amount int, bc *Blockchain) 
 
 		txID, _ := hex.DecodeString(txIDHex)
 
-		// Check if output belongs to sender - compare raw pubkey hashes
-		outPubKeyHash := crypto.Hash(out.PubKey)[:20]
-		if !bytes.Equal(outPubKeyHash, from.GetRawAddress()) {
+		// Check if output belongs to sender - TXOutput.PubKey IS the pubkey hash (20 bytes)
+		if !bytes.Equal(out.PubKey, from.GetRawAddress()) {
 			continue
 		}
 
@@ -154,7 +174,7 @@ func NewTransaction(from *wallet.Wallet, to []byte, amount int, bc *Blockchain) 
 			Txid:      txID,
 			OutIndex:  outIdx,
 			Signature: nil,
-			PubKey:    from.PublicKey,
+			PubKey:    from.PublicKey, // Input stores full pubkey for verification
 		})
 
 		total += out.Value
@@ -169,17 +189,17 @@ func NewTransaction(from *wallet.Wallet, to []byte, amount int, bc *Blockchain) 
 		return nil, fmt.Errorf("no valid UTXOs found for spending")
 	}
 
-	// Output to recipient
+	// Output to recipient - store pubkey hash (20 bytes)
 	outputs = append(outputs, TXOutput{
 		Value: amount,
-		PubKey: to,
+		PubKey: to, // Should be 20-byte pubkey hash
 	})
 
-	// Output change back to sender
+	// Output change back to sender - store pubkey hash (20 bytes)
 	if total > amount {
 		outputs = append(outputs, TXOutput{
 			Value: total - amount,
-			PubKey: from.PublicKey,
+			PubKey: from.GetRawAddress(), // Use pubkey hash
 		})
 	}
 

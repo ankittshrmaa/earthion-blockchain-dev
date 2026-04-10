@@ -8,16 +8,62 @@ import (
 	"earthion/crypto"
 )
 
-const Difficulty = 18
+const (
+	InitialDifficulty = 18
+	TargetBlockTime  = 10 // seconds - desired block time
+	AdjustmentInterval = 10 // adjust difficulty every N blocks
+)
 
 type ProofOfWork struct {
 	Block  *Block
 	Target *big.Int
 }
 
+// CurrentDifficulty returns the current difficulty for mining a new block
+func CurrentDifficulty(chain []*Block) uint32 {
+	if len(chain) < AdjustmentInterval+1 {
+		return InitialDifficulty
+	}
+
+	// Calculate time taken for last N blocks
+	oldBlock := chain[len(chain)-AdjustmentInterval]
+	newBlock := chain[len(chain)-1]
+	timeDiff := newBlock.Timestamp - oldBlock.Timestamp
+
+	// Expected time = N blocks * target block time
+	expectedTime := int64(AdjustmentInterval * TargetBlockTime)
+
+	// If blocks are coming too fast, increase difficulty
+	// If blocks are too slow, decrease difficulty
+	ratio := float64(expectedTime) / float64(timeDiff)
+
+	currentDiff := chain[len(chain)-1].Difficulty
+
+	if ratio < 1.0 {
+		// Blocks too fast - increase difficulty (but cap at some max)
+		if currentDiff > 1 {
+			return currentDiff + 1
+		}
+		return currentDiff
+	} else if ratio > 2.0 {
+		// Blocks very slow - decrease difficulty significantly
+		if currentDiff >= 2 {
+			return currentDiff - 2
+		}
+		return 1
+	}
+
+	return currentDiff
+}
+
 func NewProofOfWork(b *Block) *ProofOfWork {
+	difficulty := b.Difficulty
+	if difficulty == 0 {
+		difficulty = InitialDifficulty
+	}
+
 	target := big.NewInt(1)
-	target.Lsh(target, 256-Difficulty)
+	target.Lsh(target, 256-uint(difficulty))
 	return &ProofOfWork{b, target}
 }
 

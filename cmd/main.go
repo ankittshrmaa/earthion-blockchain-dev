@@ -68,5 +68,9 @@ func loadOrCreateBlockchain() *core.Blockchain {
 			bc = core.NewBlockchain()
 		}
 	}
+	// Enable auto-save regardless
+	if bc != nil {
+		bc.SetFilename(ChainFile)
+	}
 	return bc
 }

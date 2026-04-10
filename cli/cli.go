@@ -107,13 +107,37 @@ func (c *CLI) send(toHex, amountStr string) {
 func (c *CLI) mine() {
 	// Coinbase transaction with reward
 	reward := 50
-	// Use raw pubkey for coinbase output
-	coinbase := core.CoinbaseTx(c.wal.PublicKey, reward)
+	// Use raw 20-byte pubkey hash for coinbase output
+	// Pass current block index to ensure unique TX ID
+	blockIndex := len(c.bc.Blocks)
+	coinbase := core.CoinbaseTx(c.wal.GetRawAddress(), reward, blockIndex)
+	
+	// Debug: Show TX ID before adding block
+	fmt.Printf("Coinbase TX ID: %x\n", coinbase.ID)
+	fmt.Printf("Coinbase TX ID first 8 bytes: %x\n", coinbase.ID[:8])
+	fmt.Printf("Coinbase Output PubKey: %x (len=%d)\n", coinbase.Outputs[0].PubKey, len(coinbase.Outputs[0].PubKey))
+	fmt.Printf("Chain blocks BEFORE mine: %d\n", len(c.bc.Blocks))
+	
 	c.bc.AddBlock([]*core.Transaction{coinbase})
-
-	fmt.Printf("Mined new block! Reward: %d\n", reward)
-	// Use raw address for balance lookup
-	fmt.Printf("New balance: %d\n", c.bc.GetBalance(c.wal.GetRawAddress()))
+	
+	fmt.Printf("Chain blocks AFTER mine: %d\n", len(c.bc.Blocks))
+	
+	// Debug: Show each block's TX
+	for i := range c.bc.Blocks {
+		block := c.bc.Blocks[i]
+		for j, tx := range block.Transactions {
+			txID := hex.EncodeToString(tx.ID)
+			val := 0
+			if len(tx.Outputs) > 0 {
+				val = tx.Outputs[0].Value
+			}
+			pubk := ""
+			if len(tx.Outputs) > 0 {
+				pubk = hex.EncodeToString(tx.Outputs[0].PubKey[:8])
+			}
+			fmt.Printf("  Block %d TX %d: ID=%s, Value=%d, PubKey=%s\n", i, j, txID[:16], val, pubk)
+		}
+	}
 }
 
 func (c *CLI) validate() {

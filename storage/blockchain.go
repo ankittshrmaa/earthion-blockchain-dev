@@ -17,8 +17,9 @@ func SaveBlockchain(bc *core.Blockchain, filename string) error {
 	}
 	defer file.Close()
 
+	// Only serialize the Blocks array (not unexported fields)
 	encoder := gob.NewEncoder(file)
-	return encoder.Encode(bc)
+	return encoder.Encode(bc.Blocks)
 }
 
 // LoadBlockchain reads blockchain from file
@@ -33,12 +34,16 @@ func LoadBlockchain(filename string) (*core.Blockchain, error) {
 	}
 	defer file.Close()
 
-	bc := &core.Blockchain{}
+	// Create new blockchain and load data
+	bc := core.NewBlockchain()
 	decoder := gob.NewDecoder(file)
-	err = decoder.Decode(bc)
+	err = decoder.Decode(&bc.Blocks)
 	if err != nil {
 		return nil, err
 	}
 
+	// Initialize new fields (not serialized by gob)
+	bc.SetFilename(filename)
+	
 	return bc, nil
 }

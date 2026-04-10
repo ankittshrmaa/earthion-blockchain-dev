@@ -3,24 +3,54 @@ package core
 import (
 	"bytes"
 	"encoding/hex"
+	"encoding/gob"
 	"fmt"
 	"log"
+	"os"
 
 	"earthion/crypto"
 )
 
 type Blockchain struct {
-	Blocks []*Block
+	Blocks       []*Block
+	filename     string       // for auto-save
+	orphaned     []*Block    // Orphaned blocks (for fork resolution)
+	altChains    [][]*Block  // Alternative chains for fork handling
 }
 
 func NewBlockchain() *Blockchain {
-	return &Blockchain{[]*Block{GenesisBlock()}}
+	return &Blockchain{Blocks: []*Block{GenesisBlock()}, filename: "", orphaned: nil, altChains: nil}
+}
+
+// SetFilename enables auto-save to the specified file
+func (bc *Blockchain) SetFilename(filename string) {
+	bc.filename = filename
 }
 
 func (bc *Blockchain) AddBlock(txs []*Transaction) {
 	prev := bc.Blocks[len(bc.Blocks)-1]
-	newBlock := NewBlock(txs, prev.Hash, prev.Index+1)
+	// Pass bc.Blocks for dynamic difficulty calculation
+	newBlock := NewBlock(txs, prev.Hash, prev.Index+1, bc.Blocks)
 	bc.Blocks = append(bc.Blocks, newBlock)
+
+	// Auto-save if filename set
+	if bc.filename != "" {
+		if err := bc.saveToFile(bc.filename); err != nil {
+			log.Printf("Auto-save failed: %v", err)
+		}
+	}
+}
+
+// saveToFile persists blockchain to file (internal)
+func (bc *Blockchain) saveToFile(filename string) error {
+	file, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	encoder := gob.NewEncoder(file)
+	return encoder.Encode(bc)
 }
 
 // Validate checks the entire blockchain for integrity
@@ -129,15 +159,14 @@ func (bc *Blockchain) UTXOIndex() map[string]TXOutput {
 
 	for _, block := range bc.Blocks {
 		for _, tx := range block.Transactions {
+			// First, mark all outputs as potential UTXOs
 			txID := hex.EncodeToString(tx.ID)
-
 			for outIdx, out := range tx.Outputs {
 				key := fmt.Sprintf("%s:%d", txID, outIdx)
 				utxos[key] = out
 			}
 
-			// Remove spent inputs - but first verify the UTXO exists
-			// This prevents double-spend attacks where same output is spent multiple times
+			// Then, remove spent inputs 
 			for _, in := range tx.Inputs {
 				if in.OutIndex == -1 {
 					continue // coinbase has no valid input
@@ -145,12 +174,8 @@ func (bc *Blockchain) UTXOIndex() map[string]TXOutput {
 				inTxID := hex.EncodeToString(in.Txid)
 				key := fmt.Sprintf("%s:%d", inTxID, in.OutIndex)
 				
-				// Only delete if it exists - this prevents double-spend exploits
-				// If the key doesn't exist, it means this input was already spent
-				// (or references a non-existent output), which indicates an invalid chain
-				if _, exists := utxos[key]; exists {
-					delete(utxos, key)
-				}
+				// Remove from UTXO set (spent)
+				delete(utxos, key)
 			}
 		}
 	}
@@ -165,12 +190,127 @@ func (bc *Blockchain) GetBalance(address []byte) int {
 	balance := 0
 
 	for _, out := range utxos {
-		// Compare against the pubkey hash stored in the output
-		outPubKeyHash := crypto.Hash(out.PubKey)[:20]
-		if bytes.Equal(outPubKeyHash, address) {
+		// TXOutput.PubKey is now the stored 20-byte pubkey hash
+		if bytes.Equal(out.PubKey, address) {
 			balance += out.Value
 		}
 	}
 
 	return balance
+}
+
+// =============================================================================
+// FORK HANDLING
+// =============================================================================
+
+// TotalWork calculates the total PoW done on the chain
+func (bc *Blockchain) TotalWork() int {
+	work := 0
+	for _, block := range bc.Blocks {
+		// Each block contributes its difficulty in work
+		work += int(block.Difficulty)
+	}
+	return work
+}
+
+func (bc *Blockchain) totalWorkCalc() int {
+	_ = bc.TotalWork() // Suppress unused warning
+	work := 0
+	for _, block := range bc.Blocks {
+		work += int(block.Difficulty)
+	}
+	return work
+}
+
+// AddOrphanedBlock adds a block that doesn't connect to main chain
+func (bc *Blockchain) AddOrphanedBlock(block *Block) {
+	bc.orphaned = append(bc.orphaned, block)
+}
+
+// GetOrphanedBlocks returns all orphaned blocks
+func (bc *Blockchain) GetOrphanedBlocks() []*Block {
+	return bc.orphaned
+}
+
+// AddAlternativeChain stores an alternative chain (fork)
+func (bc *Blockchain) AddAlternativeChain(blocks []*Block) {
+	bc.altChains = append(bc.altChains, blocks)
+}
+
+// GetAlternativeChains returns all stored alternative chains
+func (bc *Blockchain) GetAlternativeChains() [][]*Block {
+	return bc.altChains
+}
+
+// AttemptReorg checks for longer valid chains and reorg if needed
+// Returns true if reorganization occurred
+func (bc *Blockchain) AttemptReorg() bool {
+	// Check if any alternative chain is longer and valid
+	for _, altChain := range bc.altChains {
+		if len(altChain) <= len(bc.Blocks) {
+			continue // Not longer
+		}
+		
+		// Validate the alternative chain
+		valid := true
+		for _, block := range altChain {
+			pow := NewProofOfWork(block)
+			if !pow.Validate() {
+				valid = false
+				break
+			}
+		}
+		
+		if valid {
+			log.Printf("Reorganization: switching to longer chain (%d -> %d blocks)\n", 
+				len(bc.Blocks), len(altChain))
+			
+			// Store current chain as orphaned before switching
+			bc.orphaned = append(bc.orphaned, bc.Blocks...)
+			
+			// Switch to new chain
+			bc.Blocks = altChain
+			bc.altChains = nil // Clear alternatives after reorg
+			
+			return true
+		}
+	}
+	
+	return false
+}
+
+// ResolveForks checks all orphaned blocks for valid new chain tips
+// Returns number of blocks incorporated
+func (bc *Blockchain) ResolveForks() int {
+	incorporated := 0
+	currentTip := bc.Blocks[len(bc.Blocks)-1]
+	
+	// Try to connect orphaned blocks
+	var remaining []*Block
+	for _, block := range bc.orphaned {
+		if bytes.Equal(block.PrevHash, currentTip.Hash) {
+			// Can connect!
+			bc.Blocks = append(bc.Blocks, block)
+			currentTip = block
+			incorporated++
+		} else {
+			remaining = append(remaining, block)
+		}
+	}
+	
+	bc.orphaned = remaining
+	return incorporated
+}
+
+// ChainHeight returns the current chain length
+func (bc *Blockchain) ChainHeight() int {
+	return len(bc.Blocks)
+}
+
+// LastBlock returns the tip of the chain
+func (bc *Blockchain) LastBlock() *Block {
+	if len(bc.Blocks) == 0 {
+		return nil
+	}
+	return bc.Blocks[len(bc.Blocks)-1]
 }

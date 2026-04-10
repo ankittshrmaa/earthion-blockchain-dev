@@ -15,6 +15,7 @@ type Block struct {
 	MerkleRoot   []byte
 	Hash         []byte
 	Nonce        int
+	Difficulty  uint32
 	Transactions []*Transaction
 }
 
@@ -27,7 +28,14 @@ func (b *Block) Serialize() []byte {
 }
 
 // Create new block with transactions
-func NewBlock(txs []*Transaction, prevHash []byte, index int) *Block {
+// prevBlocks is needed to calculate dynamic difficulty
+func NewBlock(txs []*Transaction, prevHash []byte, index int, prevBlocks []*Block) *Block {
+	// Calculate difficulty based on previous blocks
+	var difficulty uint32 = InitialDifficulty
+	if prevBlocks != nil && len(prevBlocks) > 0 {
+		difficulty = CurrentDifficulty(prevBlocks)
+	}
+
 	// Build transaction hashes
 	txHashes := make([][]byte, len(txs))
 	for i, tx := range txs {
@@ -49,6 +57,7 @@ func NewBlock(txs []*Transaction, prevHash []byte, index int) *Block {
 		Timestamp:    time.Now().Unix(),
 		PrevHash:     prevHash,
 		MerkleRoot:   merkleRoot,
+		Difficulty:  difficulty,
 		Transactions: txs,
 	}
 
@@ -63,5 +72,5 @@ func NewBlock(txs []*Transaction, prevHash []byte, index int) *Block {
 
 // First block in chain
 func GenesisBlock() *Block {
-	return NewBlock([]*Transaction{}, []byte{}, 0)
+	return NewBlock([]*Transaction{}, []byte{}, 0, nil)
 }
