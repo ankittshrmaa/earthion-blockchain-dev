@@ -12,6 +12,7 @@ import (
 	"earthion/wallet"
 )
 
+
 const WalletFile = "wallet.dat"
 
 type CLI struct {
