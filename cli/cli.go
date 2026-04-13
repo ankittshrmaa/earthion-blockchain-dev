@@ -80,15 +80,34 @@ func (c *CLI) balance() {
 }
 
 func (c *CLI) send(toHex, amountStr string) {
+	// Validate address length: 20 bytes = 40 hex characters
+	if len(toHex) != 40 {
+		fmt.Println("Invalid address: must be 20 bytes (40 hex characters)")
+		return
+	}
+
 	toAddr, err := hex.DecodeString(toHex)
 	if err != nil {
-		fmt.Println("Invalid address")
+		fmt.Println("Invalid address: not valid hex")
 		return
 	}
 
 	amount, err := strconv.Atoi(amountStr)
 	if err != nil {
-		fmt.Println("Invalid amount")
+		fmt.Println("Invalid amount: not a valid integer")
+		return
+	}
+
+	// Validate amount is positive
+	if amount <= 0 {
+		fmt.Println("Invalid amount: must be greater than 0")
+		return
+	}
+
+	// Validate amount is not excessively large (prevent overflow)
+	const maxAmount = 1000000000 // 1 billion max per transaction
+	if amount > maxAmount {
+		fmt.Printf("Invalid amount: exceeds maximum of %d\n", maxAmount)
 		return
 	}
 
@@ -105,12 +124,18 @@ func (c *CLI) send(toHex, amountStr string) {
 }
 
 func (c *CLI) mine() {
-	// Coinbase transaction with reward
-	reward := 50
-	// Use raw 20-byte pubkey hash for coinbase output
-	// Pass current block index to ensure unique TX ID
+	// Get previous block hash for coinbase uniqueness
+	var prevBlockHash []byte
+	if len(c.bc.Blocks) > 0 {
+		prevBlockHash = c.bc.Blocks[len(c.bc.Blocks)-1].Hash
+	}
+
+	// Get block reward with halving
 	blockIndex := len(c.bc.Blocks)
-	coinbase := core.CoinbaseTx(c.wal.GetRawAddress(), reward, blockIndex)
+	reward := core.GetBlockReward(blockIndex)
+
+	// Use raw 20-byte pubkey hash for coinbase output
+	coinbase := core.CoinbaseTx(c.wal.GetRawAddress(), reward, blockIndex, prevBlockHash)
 	
 	// Debug: Show TX ID before adding block
 	fmt.Printf("Coinbase TX ID: %x\n", coinbase.ID)
@@ -152,8 +177,31 @@ func (c *CLI) listBlocks() {
 	for i, block := range c.bc.Blocks {
 		fmt.Printf("\nBlock %d:\n", i)
 		fmt.Printf("  Index: %d\n", block.Index)
-		fmt.Printf("  Hash: %s\n", hex.EncodeToString(block.Hash[:16]))
-		fmt.Printf("  PrevHash: %s\n", hex.EncodeToString(block.PrevHash[:16]))
+		
+		// Safe slicing - check length before slicing
+		hashHex := ""
+		if len(block.Hash) > 0 {
+			hashLen := 16
+			if len(block.Hash) < 16 {
+				hashLen = len(block.Hash)
+			}
+			hashHex = hex.EncodeToString(block.Hash[:hashLen])
+		} else {
+			hashHex = "(empty)"
+		}
+		fmt.Printf("  Hash: %s\n", hashHex)
+		
+		prevHashHex := ""
+		if len(block.PrevHash) > 0 {
+			prevHashLen := 16
+			if len(block.PrevHash) < 16 {
+				prevHashLen = len(block.PrevHash)
+			}
+			prevHashHex = hex.EncodeToString(block.PrevHash[:prevHashLen])
+		} else {
+			prevHashHex = "(empty)"
+		}
+		fmt.Printf("  PrevHash: %s\n", prevHashHex)
 		fmt.Printf("  Transactions: %d\n", len(block.Transactions))
 	}
 }

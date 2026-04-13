@@ -228,8 +228,17 @@ func (ek *ExtendedKey) PublicKeyBytes() ([]byte, error) {
 
 // Sign signs data with the private key
 func (ek *ExtendedKey) Sign(data []byte) ([]byte, error) {
+	if !ek.IsPrivate {
+		return nil, ErrInvalidKey
+	}
 	priv := secp256k1.PrivKeyFromBytes(ek.Key[1:])
+	if priv == nil {
+		return nil, fmt.Errorf("failed to parse private key")
+	}
 	sig := ecdsa.Sign(priv, data)
+	if sig == nil {
+		return nil, fmt.Errorf("failed to create signature")
+	}
 	return sig.Serialize(), nil
 }
 

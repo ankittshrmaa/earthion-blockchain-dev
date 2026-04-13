@@ -16,10 +16,25 @@ type Blockchain struct {
 	filename     string       // for auto-save
 	orphaned     []*Block    // Orphaned blocks (for fork resolution)
 	altChains    [][]*Block  // Alternative chains for fork handling
+
+	// Index maps for O(1) lookups
+	blockIndex  map[string]int  // hash -> block index
+	txIndex    map[string]*Transaction  // txID -> transaction
 }
 
 func NewBlockchain() *Blockchain {
-	return &Blockchain{Blocks: []*Block{GenesisBlock()}, filename: "", orphaned: nil, altChains: nil}
+	bc := &Blockchain{
+		Blocks:    []*Block{GenesisBlock()},
+		filename:  "",
+		orphaned:  nil,
+		altChains: nil,
+	}
+	// Initialize indices
+	bc.blockIndex = make(map[string]int)
+	bc.txIndex = make(map[string]*Transaction)
+	// Index genesis block
+	bc.rebuildIndex()
+	return bc
 }
 
 // SetFilename enables auto-save to the specified file
@@ -33,11 +48,41 @@ func (bc *Blockchain) AddBlock(txs []*Transaction) {
 	newBlock := NewBlock(txs, prev.Hash, prev.Index+1, bc.Blocks)
 	bc.Blocks = append(bc.Blocks, newBlock)
 
+	// Update indices
+	bc.updateIndex(newBlock)
+
 	// Auto-save if filename set
 	if bc.filename != "" {
 		if err := bc.saveToFile(bc.filename); err != nil {
 			log.Printf("Auto-save failed: %v", err)
 		}
+	}
+}
+
+// rebuildIndex rebuilds all indices from blocks
+func (bc *Blockchain) rebuildIndex() {
+	bc.blockIndex = make(map[string]int)
+	bc.txIndex = make(map[string]*Transaction)
+
+	for i, block := range bc.Blocks {
+		hash := hex.EncodeToString(block.Hash)
+		bc.blockIndex[hash] = i
+
+		for _, tx := range block.Transactions {
+			txID := hex.EncodeToString(tx.ID)
+			bc.txIndex[txID] = tx
+		}
+	}
+}
+
+// updateIndex adds a new block to indices
+func (bc *Blockchain) updateIndex(block *Block) {
+	hash := hex.EncodeToString(block.Hash)
+	bc.blockIndex[hash] = block.Index
+
+	for _, tx := range block.Transactions {
+		txID := hex.EncodeToString(tx.ID)
+		bc.txIndex[txID] = tx
 	}
 }
 
@@ -74,12 +119,20 @@ func (bc *Blockchain) Validate() bool {
 
 		if !bytes.Equal(block.PrevHash, prevBlock.Hash) {
 			log.Printf("Block %d: prevHash doesn't match previous block hash\n", i)
+			log.Printf("  block.PrevHash: %x\n", block.PrevHash[:8])
+			log.Printf("  prevBlock.Hash: %x\n", prevBlock.Hash[:8])
 			return false
 		}
 
 		pow := NewProofOfWork(block)
 		if !pow.Validate() {
+			// Debug: show hash comparison
+			data := pow.prepareData(block.Nonce)
+			calcHash := crypto.DoubleHash(data)
 			log.Printf("Block %d: PoW validation failed\n", i)
+			log.Printf("  stored Hash:   %x\n", block.Hash[:8])
+			log.Printf("  calculated:  %x\n", calcHash[:8])
+			log.Printf("  Nonce: %d, Difficulty: %d\n", block.Nonce, block.Difficulty)
 			return false
 		}
 
@@ -133,6 +186,13 @@ func (bc *Blockchain) Validate() bool {
 }
 
 func (bc *Blockchain) GetBlock(blockHash []byte) *Block {
+	// Try index first (O(1))
+	hash := hex.EncodeToString(blockHash)
+	if idx, ok := bc.blockIndex[hash]; ok {
+		return bc.Blocks[idx]
+	}
+
+	// Fallback to linear search
 	for _, block := range bc.Blocks {
 		if bytes.Equal(block.Hash, blockHash) {
 			return block
@@ -141,7 +201,22 @@ func (bc *Blockchain) GetBlock(blockHash []byte) *Block {
 	return nil
 }
 
+// GetBlockByIndex returns a block by its index (O(1))
+func (bc *Blockchain) GetBlockByIndex(index int) *Block {
+	if index >= 0 && index < len(bc.Blocks) {
+		return bc.Blocks[index]
+	}
+	return nil
+}
+
 func (bc *Blockchain) FindTransaction(txID []byte) *Transaction {
+	// Try index first (O(1))
+	txIDHex := hex.EncodeToString(txID)
+	if tx, ok := bc.txIndex[txIDHex]; ok {
+		return tx
+	}
+
+	// Fallback to linear search
 	for _, block := range bc.Blocks {
 		for _, tx := range block.Transactions {
 			if bytes.Equal(tx.ID, txID) {
@@ -213,15 +288,6 @@ func (bc *Blockchain) TotalWork() int {
 	return work
 }
 
-func (bc *Blockchain) totalWorkCalc() int {
-	_ = bc.TotalWork() // Suppress unused warning
-	work := 0
-	for _, block := range bc.Blocks {
-		work += int(block.Difficulty)
-	}
-	return work
-}
-
 // AddOrphanedBlock adds a block that doesn't connect to main chain
 func (bc *Blockchain) AddOrphanedBlock(block *Block) {
 	bc.orphaned = append(bc.orphaned, block)
@@ -272,6 +338,9 @@ func (bc *Blockchain) AttemptReorg() bool {
 			bc.Blocks = altChain
 			bc.altChains = nil // Clear alternatives after reorg
 			
+			// CRITICAL: Rebuild indices after reorganization
+			bc.rebuildIndex()
+			
 			return true
 		}
 	}
@@ -299,6 +368,12 @@ func (bc *Blockchain) ResolveForks() int {
 	}
 	
 	bc.orphaned = remaining
+	
+	// Rebuild indices if any blocks were incorporated
+	if incorporated > 0 {
+		bc.rebuildIndex()
+	}
+	
 	return incorporated
 }
 
@@ -313,4 +388,9 @@ func (bc *Blockchain) LastBlock() *Block {
 		return nil
 	}
 	return bc.Blocks[len(bc.Blocks)-1]
+}
+
+// RebuildIndex rebuilds all indices (used after loading from disk)
+func (bc *Blockchain) RebuildIndex() {
+	bc.rebuildIndex()
 }

@@ -50,9 +50,11 @@ func (m *Mempool) Add(tx *Transaction) error {
 	// Add to mempool
 	m.txs[txID] = tx
 
-	// Index by sender
-	if len(tx.Outputs) > 0 {
-		sender := string(tx.Outputs[0].PubKey)
+	// Index by sender - derive from inputs (the spending party)
+	// For coinbase transactions, there's no real sender, so skip indexing
+	if !tx.IsCoinbase() && len(tx.Inputs) > 0 {
+		// Use the first input's PubKey as sender identifier
+		sender := hex.EncodeToString(tx.Inputs[0].PubKey)
 		m.bySender[sender] = append(m.bySender[sender], txID)
 	}
 
@@ -71,8 +73,8 @@ func (m *Mempool) Remove(txID []byte) {
 	}
 
 	// Remove from sender index
-	if len(tx.Outputs) > 0 {
-		sender := string(tx.Outputs[0].PubKey)
+	if !tx.IsCoinbase() && len(tx.Inputs) > 0 {
+		sender := hex.EncodeToString(tx.Inputs[0].PubKey)
 		if ids, ok := m.bySender[sender]; ok {
 			for i, id := range ids {
 				if id == key {
@@ -101,7 +103,8 @@ func (m *Mempool) GetBySender(address []byte) []*Transaction {
 	defer m.mu.RUnlock()
 
 	var result []*Transaction
-	txIDs := m.bySender[string(address)]
+	sender := hex.EncodeToString(address)
+	txIDs := m.bySender[sender]
 	for _, txID := range txIDs {
 		if tx, ok := m.txs[txID]; ok {
 			result = append(result, tx)

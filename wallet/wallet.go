@@ -36,9 +36,17 @@ func decodePublicKey(data []byte) (*btcec.PublicKey, error) {
 	return btcec.ParsePubKey(data)
 }
 
+// Sign signs data with the private key and returns signature
+// Returns nil if signing fails
 func (w *Wallet) Sign(data []byte) []byte {
-	privateKey, _ := btcec.PrivKeyFromBytes(w.PrivateKeyBytes)
+	privateKey, err := btcec.PrivKeyFromBytes(w.PrivateKeyBytes)
+	if err != nil {
+		return nil
+	}
 	signature := ecdsa.Sign(privateKey, data)
+	if signature == nil {
+		return nil
+	}
 	return signature.Serialize()
 }
 

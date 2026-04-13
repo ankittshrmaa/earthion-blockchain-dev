@@ -12,11 +12,12 @@ import (
 
 // Validation constants
 const (
-	MaxTransactionSize    = 1000000 // 1MB
+	MaxTransactionSize       = 1000000  // 1MB
 	MaxOutputsPerTransaction = 10000
 	MaxInputsPerTransaction = 10000
-	MaxValue         = math.MaxInt64 // Max value per output
-	BlockMaxTimeInFuture = 2 * 60    // 2 minutes in seconds
+	MaxValue               = math.MaxInt64 // Max value per output
+	BlockMaxTimeInFuture   = 2 * 60       // 2 minutes in seconds
+	MaxBlockSize           = 1000000       // 1MB max block size
 )
 
 // ValidationError represents a validation error with code
@@ -53,6 +54,7 @@ const (
 	ErrCodePoW       = "ERR_BLOCK_POW"
 	ErrCodeMerkle    = "ERR_BLOCK_MERKLE"
 	ErrCodeOrphan    = "ERR_TX_ORPHAN"
+	ErrCodeBlockSize = "ERR_BLOCK_SIZE"
 )
 
 // =============================================================================
@@ -207,6 +209,12 @@ func ValidateBlock(block *Block, prevBlock *Block) *ValidationError {
 	if block.Difficulty == 0 {
 		return &ValidationError{Code: ErrCodeChainTip, Message: "zero difficulty"}
 	}
+	if block.Difficulty < MinDifficulty {
+		return &ValidationError{Code: ErrCodeChainTip, Message: "difficulty below minimum"}
+	}
+	if block.Difficulty > MaxDifficulty {
+		return &ValidationError{Code: ErrCodeChainTip, Message: "difficulty above maximum"}
+	}
 
 	// Check PoW
 	pow := NewProofOfWork(block)
@@ -243,6 +251,13 @@ func ValidateBlock(block *Block, prevBlock *Block) *ValidationError {
 	// Check coinbase is first
 	if !block.Transactions[0].IsCoinbase() {
 		return &ValidationError{Code: ErrCodeChainTip, Message: "first tx is not coinbase"}
+	}
+
+	// Check block size limit
+	blockSize := len(block.Serialize())
+	if blockSize > MaxBlockSize {
+		return &ValidationError{Code: ErrCodeChainTip, 
+			Message: fmt.Sprintf("block size %d exceeds limit %d", blockSize, MaxBlockSize)}
 	}
 
 	return nil

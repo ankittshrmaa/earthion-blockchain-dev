@@ -12,6 +12,11 @@ import (
 	"earthion/wallet"
 )
 
+func init() {
+	// Seed random only once at startup
+	rand.Seed(time.Now().UnixNano())
+}
+
 type Transaction struct {
 	ID []byte
 	Inputs []TXInput
@@ -40,24 +45,29 @@ func (tx *Transaction) Serialize() []byte {
 // SetID generates a unique ID for the transaction
 // Uses timestamp + random nonce to ensure uniqueness
 func (tx *Transaction) SetID() {
-	rand.Seed(time.Now().UnixNano())
 	nonce := make([]byte, 8)
 	rand.Read(nonce)
-	
+
 	data := tx.Serialize()
 	data = append(data, nonce...)
 	tx.ID = crypto.DoubleHash(data)
 }
 
 // Sign signs the transaction data with the private key
-func (tx *Transaction) Sign(privateKey *wallet.Wallet) {
+func (tx *Transaction) Sign(privateKey *wallet.Wallet) error {
 	tx.SetID()
 
 	data := tx.GetSignData()
 
 	for i := range tx.Inputs {
-		tx.Inputs[i].Signature = privateKey.Sign(data)
+		sig := privateKey.Sign(data)
+		if sig == nil {
+			return fmt.Errorf("failed to sign transaction input %d", i)
+		}
+		tx.Inputs[i].Signature = sig
 	}
+	
+	return nil
 }
 
 // GetSignData returns the data to be signed (transaction ID + outputs)
@@ -79,11 +89,20 @@ func (tx *Transaction) Verify() bool {
 		return false
 	}
 
+	// Coinbase transactions don't need verification
+	if tx.IsCoinbase() {
+		return true
+	}
+
 	data := tx.GetSignData()
 
 	for _, input := range tx.Inputs {
-		if len(input.Signature) == 0 || len(input.PubKey) == 0 {
-			continue // Skip empty inputs (coinbase)
+		// CRITICAL: Both signature and pubkey must be present
+		if len(input.Signature) == 0 {
+			return false
+		}
+		if len(input.PubKey) == 0 {
+			return false
 		}
 		if !wallet.VerifySignature(input.PubKey, data, input.Signature) {
 			return false
@@ -100,8 +119,8 @@ func (tx *Transaction) IsCoinbase() bool {
 
 // CoinbaseTx creates a reward transaction for mining
 // pubKey should be the 20-byte pubkey hash (not full public key)
-// blockIndex is used to create a unique TX ID
-func CoinbaseTx(pubKeyHash []byte, amount int, blockIndex int) *Transaction {
+// blockIndex and prevBlockHash are used to create a unique TX ID
+func CoinbaseTx(pubKeyHash []byte, amount int, blockIndex int, prevBlockHash []byte) *Transaction {
 	tx := &Transaction{
 		Inputs: []TXInput{
 			{
@@ -119,9 +138,18 @@ func CoinbaseTx(pubKeyHash []byte, amount int, blockIndex int) *Transaction {
 		},
 	}
 
-	// Include block index in serialization to ensure unique TX ID
-	tx.SetIDWithIndex(blockIndex)
+	// Generate unique TX ID using block index + prev block hash + timestamp
+	tx.SetUniqueID(blockIndex, prevBlockHash)
 	return tx
+}
+
+// SetUniqueID generates a unique coinbase TX ID
+// Uses block index + previous block hash for cryptographic uniqueness
+func (tx *Transaction) SetUniqueID(blockIndex int, prevBlockHash []byte) {
+	data := tx.Serialize()
+	data = append(data, IntToHex(int64(blockIndex))...)
+	data = append(data, prevBlockHash...)
+	tx.ID = crypto.DoubleHash(data)
 }
 
 // SetIDWithIndex generates a unique ID using block index
@@ -219,6 +247,99 @@ func NewTransaction(from *wallet.Wallet, to []byte, amount int, bc *Blockchain) 
 		Outputs: outputs,
 	}
 
-	tx.Sign(from)
+	if err := tx.Sign(from); err != nil {
+		return nil, fmt.Errorf("failed to sign transaction: %w", err)
+	}
+	
 	return tx, nil
+}
+
+// =============================================================================
+// JSON Serialization Helpers
+// =============================================================================
+
+// TransactionJSON is a JSON-friendly version of Transaction
+type TransactionJSON struct {
+	ID       string          `json:"id"`
+	Inputs  []TXInputJSON   `json:"inputs"`
+	Outputs []TXOutputJSON `json:"outputs"`
+}
+
+// TXInputJSON is a JSON-friendly version of TXInput
+type TXInputJSON struct {
+	Txid     string `json:"txid"`
+	OutIndex int    `json:"outIndex"`
+	Signature string `json:"signature"`
+	PubKey   string `json:"pubKey"`
+}
+
+// TXOutputJSON is a JSON-friendly version of TXOutput
+type TXOutputJSON struct {
+	Value  int    `json:"value"`
+	PubKey string `json:"pubKey"`
+}
+
+// ToJSON converts Transaction to JSON format
+func (tx *Transaction) ToJSON() TransactionJSON {
+	tj := TransactionJSON{
+		ID: hex.EncodeToString(tx.ID),
+	}
+
+	tj.Inputs = make([]TXInputJSON, len(tx.Inputs))
+	for i, in := range tx.Inputs {
+		tj.Inputs[i] = TXInputJSON{
+			Txid:     hex.EncodeToString(in.Txid),
+			OutIndex: in.OutIndex,
+			Signature: hex.EncodeToString(in.Signature),
+			PubKey:   hex.EncodeToString(in.PubKey),
+		}
+	}
+
+	tj.Outputs = make([]TXOutputJSON, len(tx.Outputs))
+	for i, out := range tx.Outputs {
+		tj.Outputs[i] = TXOutputJSON{
+			Value:  out.Value,
+			PubKey: hex.EncodeToString(out.PubKey),
+		}
+	}
+
+	return tj
+}
+
+// FromJSON converts JSON format to Transaction
+func TransactionFromJSON(tj TransactionJSON) *Transaction {
+	tx := &Transaction{
+		ID: decodeHex(tj.ID),
+	}
+
+	tx.Inputs = make([]TXInput, len(tj.Inputs))
+	for i, in := range tj.Inputs {
+		tx.Inputs[i] = TXInput{
+			Txid:     decodeHex(in.Txid),
+			OutIndex: in.OutIndex,
+			Signature: decodeHex(in.Signature),
+			PubKey:   decodeHex(in.PubKey),
+		}
+	}
+
+	tx.Outputs = make([]TXOutput, len(tj.Outputs))
+	for i, out := range tj.Outputs {
+		tx.Outputs[i] = TXOutput{
+			Value:  out.Value,
+			PubKey: decodeHex(out.PubKey),
+		}
+	}
+
+	return tx
+}
+
+func decodeHex(s string) []byte {
+	if s == "" {
+		return []byte{}
+	}
+	b, err := hex.DecodeString(s)
+	if err != nil {
+		return []byte{} // Return empty on error rather than silently ignoring
+	}
+	return b
 }

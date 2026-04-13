@@ -36,6 +36,14 @@ func NewBlock(txs []*Transaction, prevHash []byte, index int, prevBlocks []*Bloc
 		difficulty = CurrentDifficulty(prevBlocks)
 	}
 
+	// Enforce difficulty bounds (safety check)
+	if difficulty < MinDifficulty {
+		difficulty = MinDifficulty
+	}
+	if difficulty > MaxDifficulty {
+		difficulty = MaxDifficulty
+	}
+
 	// Build transaction hashes
 	txHashes := make([][]byte, len(txs))
 	for i, tx := range txs {
